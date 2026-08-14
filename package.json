@@ -1,0 +1,42 @@
+{
+  "name": "@x1pher/mcp-server-filesystem",
+  "version": "2026.7.10-x1pher.1",
+  "description": "Community-maintained filesystem MCP server variant with inode-preserving existing-file writes",
+  "private": true,
+  "license": "SEE LICENSE IN LICENSE",
+  "author": "X1pheR",
+  "homepage": "https://github.com/X1pheR/mcp-server-filesystem",
+  "bugs": "https://github.com/X1pheR/mcp-server-filesystem/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/X1pheR/mcp-server-filesystem.git"
+  },
+  "type": "module",
+  "bin": {
+    "mcp-server-filesystem": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc && shx chmod +x dist/*.js",
+    "watch": "tsc --watch",
+    "test": "vitest run --coverage",
+    "verify": "npm run build && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "diff": "^8.0.3",
+    "glob": "^10.5.0",
+    "minimatch": "^10.0.1"
+  },
+  "devDependencies": {
+    "@types/diff": "^5.0.9",
+    "@types/minimatch": "^5.1.2",
+    "@types/node": "^22",
+    "@vitest/coverage-v8": "^4.1.8",
+    "shx": "^0.3.4",
+    "typescript": "^5.8.2",
+    "vitest": "^4.1.8"
+  }
+}

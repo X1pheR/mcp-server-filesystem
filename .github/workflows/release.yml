@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Verify tag and source
+        run: |
+          set -eu
+          version="$(node -p "require('./package.json').version")"
+          test "${GITHUB_REF_NAME}" = "v${version}"
+          npm ci --ignore-scripts
+          npm run verify
+      - name: Build release assets
+        id: assets
+        run: |
+          set -eu
+          artifact="$(npm pack --ignore-scripts --silent)"
+          sha256sum "${artifact}" > SHA256SUMS
+          echo "artifact=${artifact}" >> "${GITHUB_OUTPUT}"
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ steps.assets.outputs.artifact }}
+        run: gh release create "${GITHUB_REF_NAME}" "${ARTIFACT}" SHA256SUMS --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes

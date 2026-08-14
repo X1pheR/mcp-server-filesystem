@@ -1,0 +1,8 @@
+{
+  "repository": "modelcontextprotocol/servers",
+  "path": "src/filesystem",
+  "release": "2026.7.10",
+  "commit": "9a96ea6e5913736f92b88345bf51caeaaa8e719f",
+  "package": "@modelcontextprotocol/server-filesystem@2026.7.10",
+  "tracking_pull_request": 4516
+}
