@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026.7.10-x1pher.8 - 2026-08-29
+
+- Republished the clean generic product state after repository immutable-release protection was enabled; no file-transport behavior changed.
+
 ## 2026.7.10-x1pher.7 - 2026-08-29
 
 - Added a bounded binary-safe connector file bridge with native file-parameter ingress, streaming size limits, SHA-256 verification, path and symlink defenses, atomic publication, and no-clobber defaults.
