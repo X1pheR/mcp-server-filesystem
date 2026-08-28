@@ -4,37 +4,111 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish"
+        required: true
+        type: string
+      expected_sha:
+        description: "Exact 40-character release source commit SHA"
+        required: true
+        type: string
 
-permissions:
-  contents: write
+permissions: read-all
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      EXPECTED_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_sha || github.sha }}
     steps:
-      - name: Check out source
+      - name: Check out exact release source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: npm
-      - name: Verify tag and source
+
+      - name: Require public repository and exact release source
+        shell: bash
         run: |
-          set -eu
+          set -euo pipefail
+          test "${{ github.event.repository.private }}" = "false"
+          [[ "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]]
           version="$(node -p "require('./package.json').version")"
-          test "${GITHUB_REF_NAME}" = "v${version}"
+          test "${RELEASE_TAG}" = "v${version}"
+          git fetch origin main
+          test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"
+          test "$(git rev-list -n1 "${RELEASE_TAG}")" = "${EXPECTED_SHA}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            test "${EXPECTED_SHA}" = "$(git rev-parse origin/main)"
+          else
+            git merge-base --is-ancestor "${EXPECTED_SHA}" origin/main
+          fi
+
+      - name: Verify exact tag
+        shell: bash
+        run: |
+          set -euo pipefail
           npm ci --ignore-scripts
           npm run verify
-      - name: Build release assets
+          npm pack --ignore-scripts --dry-run
+
+      - name: Build reproducible release artifact
         id: assets
+        shell: bash
         run: |
-          set -eu
-          artifact="$(npm pack --ignore-scripts --silent)"
-          sha256sum "${artifact}" > SHA256SUMS
-          echo "artifact=${artifact}" >> "${GITHUB_OUTPUT}"
-      - name: Publish GitHub Release
+          set -euo pipefail
+          release_work_dir="$(mktemp -d)"
+          trap 'rm -rf "$release_work_dir"' EXIT
+          mkdir -p "$release_work_dir/pack-a" "$release_work_dir/pack-b" release-assets
+          artifact_a="$(npm pack --ignore-scripts --silent --pack-destination "$release_work_dir/pack-a")"
+          artifact_b="$(npm pack --ignore-scripts --silent --pack-destination "$release_work_dir/pack-b")"
+          test "${artifact_a}" = "${artifact_b}"
+          cmp "$release_work_dir/pack-a/${artifact_a}" "$release_work_dir/pack-b/${artifact_b}"
+          cp "$release_work_dir/pack-a/${artifact_a}" "release-assets/${artifact_a}"
+          sha256sum "release-assets/${artifact_a}" | sed 's#  release-assets/#  #' > SHA256SUMS
+          echo "artifact=${artifact_a}" >> "${GITHUB_OUTPUT}"
+
+      - name: Attest release artifact
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: "release-assets/*"
+
+      - name: Prepare provenance bundle
+        env:
+          ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "${ATTESTATION_BUNDLE}"
+          cp "${ATTESTATION_BUNDLE}" "mcp-server-filesystem-${RELEASE_TAG}.sigstore.json"
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${RELEASE_TAG}" --draft --verify-tag --title "${RELEASE_TAG}" --generate-notes
+
+      - name: Attach release assets
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT: ${{ steps.assets.outputs.artifact }}
-        run: gh release create "${GITHUB_REF_NAME}" "${ARTIFACT}" SHA256SUMS --verify-tag --title "${GITHUB_REF_NAME}" --generate-notes
+        run: gh release upload "${RELEASE_TAG}" "release-assets/${ARTIFACT}" SHA256SUMS "mcp-server-filesystem-${RELEASE_TAG}.sigstore.json"
+
+      - name: Publish immutable GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${RELEASE_TAG}" --draft=false

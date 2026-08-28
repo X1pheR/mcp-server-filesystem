@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   RootsListChangedNotificationSchema,
@@ -14,6 +14,14 @@ import { z } from "zod";
 import { minimatch } from "minimatch";
 import { normalizePath, expandHome } from './path-utils.js';
 import { getValidRootDirectories } from './roots-utils.js';
+import {
+  createExport,
+  ingestConnectorFile,
+  loadBridgeConfig,
+  readExportResource,
+  startStaticExportCleanup,
+  type ConnectorFileInput,
+} from './file-bridge.js';
 import {
   // Function imports
   formatSize,
@@ -159,12 +167,54 @@ const GetFileInfoArgsSchema = z.object({
   path: z.string(),
 });
 
+const ConnectorFileSchema = z.object({
+  download_url: z.string(),
+  file_id: z.string(),
+  mime_type: z.string().optional(),
+  file_name: z.string().optional(),
+});
+
+const IngestFileArgsSchema = z.object({
+  file: ConnectorFileSchema.describe(
+    'Connector/runtime file supplied through the native ChatGPT file-parameter bridge.'
+  ),
+  file_name: z.string().optional().describe('Optional safe destination filename only; paths are not accepted.'),
+  expected_sha256: z.string().optional().describe('Optional expected SHA-256 as 64 hexadecimal characters.'),
+  overwrite: z.boolean().optional().default(false).describe('Replace an existing ingress file only when explicitly true.'),
+});
+
+const ExportFileArgsSchema = z.object({
+  path: z.string().describe('Existing regular file path within the configured filesystem allowlist.'),
+});
+
+const FileMetadataOutputSchema = {
+  path: z.string(),
+  host_path: z.string().optional(),
+  file_name: z.string(),
+  size: z.number().int().nonnegative(),
+  mime_type: z.string(),
+  sha256: z.string(),
+};
+
 // Server setup
 const server = new McpServer(
   {
     name: "secure-filesystem-server",
     version: "0.2.0",
   }
+);
+
+const bridgeConfig = loadBridgeConfig();
+
+server.registerResource(
+  'Exported file',
+  new ResourceTemplate('mcp-file://export/{token}', { list: undefined }),
+  {
+    description: 'Short-lived binary resource created by export_file. The resource is bounded and revalidated before every read.',
+  },
+  async (uri, variables) => ({
+    contents: [await readExportResource(variables.token, uri.href, bridgeConfig)],
+  }),
 );
 
 // Reads a file as a stream of buffers, concatenates them, and then encodes
@@ -313,6 +363,73 @@ server.registerTool(
       structuredContent: { content: [contentItem] }
     };
   }
+);
+
+server.registerTool(
+  'ingest_file',
+  {
+    title: 'Ingest Connector File',
+    description:
+      'Persist the exact bytes of a native ChatGPT connector/runtime file into the bounded configured ingress staging directory. ' +
+      'The destination directory is server-controlled; callers may provide only an optional filename. ' +
+      'The tool streams bytes, enforces the configured size limit, calculates SHA-256, supports optional expected-hash verification, ' +
+      'uses atomic publication, and never returns file content or base64.',
+    inputSchema: IngestFileArgsSchema.shape,
+    outputSchema: {
+      ...FileMetadataOutputSchema,
+      overwritten: z.boolean(),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: true, openWorldHint: false },
+    _meta: { 'openai/fileParams': ['file'] },
+  },
+  async (args: z.infer<typeof IngestFileArgsSchema>) => {
+    const metadata = await ingestConnectorFile(
+      {
+        file: args.file as ConnectorFileInput,
+        file_name: args.file_name,
+        expected_sha256: args.expected_sha256,
+        overwrite: args.overwrite,
+      },
+      bridgeConfig,
+    );
+    return {
+      content: [{ type: 'text' as const, text: JSON.stringify(metadata) }],
+      structuredContent: metadata,
+    };
+  },
+);
+
+server.registerTool(
+  'export_file',
+  {
+    title: 'Export File',
+    description:
+      'Expose an existing allowed regular file as a short-lived downloadable file reference plus MCP resource link. ' +
+      'When static export is configured, the tool creates a time-bounded externally reachable copy in the configured staging directory. ' +
+      'It enforces the filesystem allowlist, rejects directories and symlink escapes, applies the configured export size limit, ' +
+      'and returns SHA-256 metadata without embedding the binary payload in ordinary tool JSON.',
+    inputSchema: ExportFileArgsSchema.shape,
+    outputSchema: {
+      ...FileMetadataOutputSchema,
+      resource_uri: z.string(),
+      file_uri: ConnectorFileSchema.optional(),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  async (args: z.infer<typeof ExportFileArgsSchema>) => {
+    const metadata = await createExport(args.path, bridgeConfig);
+    return {
+      content: [{
+        type: 'resource_link' as const,
+        uri: metadata.resource_uri,
+        name: metadata.file_name,
+        title: metadata.file_name,
+        mimeType: metadata.mime_type,
+        size: metadata.size,
+      }],
+      structuredContent: metadata,
+    };
+  },
 );
 
 server.registerTool(
@@ -771,6 +888,10 @@ server.server.oninitialized = async () => {
 
 // Start server
 async function runServer() {
+  const staticCleanup = await startStaticExportCleanup(bridgeConfig);
+  if (staticCleanup) {
+    console.error('Static file export cleanup active');
+  }
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Secure MCP Filesystem Server running on stdio");

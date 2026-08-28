@@ -1,14 +1,16 @@
 # Tool reference
 
-The server exposes the same 14 MCP tools as the tracked upstream filesystem baseline. Every path is constrained by the server's allowed-directory boundary.
+The server exposes the tracked upstream filesystem tools plus two narrowly scoped connector file-transport extensions. Every filesystem path remains constrained by the server's allowed-directory boundary.
 
 | Tool | Access | Destructive | Purpose |
 |---|---|---:|---|
 | `read_file` | Read | No | Deprecated text-file reader retained for compatibility; use `read_text_file`. |
 | `read_text_file` | Read | No | Read a text file, optionally limited to its first or last N lines. |
 | `read_media_file` | Read | No | Read media or binary content as an MCP image, audio or embedded resource content block. |
+| `export_file` | Transport | No | Return metadata plus a short-lived downloadable file reference and MCP resource link; configured static export creates an externally reachable temporary copy. |
 | `read_multiple_files` | Read | No | Read multiple text files in one call; individual file errors are returned without aborting all reads. |
 | `write_file` | Write | Yes | Create a new text file or completely replace the content of an existing file. |
+| `ingest_file` | Write | Yes when replacing; creates staged files otherwise | Stream a native ChatGPT connector file into the fixed configured ingress staging root with SHA-256 and atomic publication. |
 | `edit_file` | Write | Yes when `dryRun=false` | Apply line-based text replacements and return a unified diff; `dryRun=true` previews without writing. |
 | `create_directory` | Write | No | Create a directory and any missing parent directories; succeeds when the directory already exists. |
 | `list_directory` | Read | No | List files and directories directly below a directory. |
@@ -44,6 +46,20 @@ Input:
 - `path`: file path.
 
 Known image and audio extensions are returned as image or audio MCP content. Other binary content is returned as an embedded resource with a MIME type and base64 payload.
+
+### `export_file`
+
+Input:
+
+- `path`: existing regular file path within the current allowed-directory boundary.
+
+The tool rejects directories, non-regular files, paths outside the allowlist, symlink escapes, and files larger than `FILE_BRIDGE_MAX_EXPORT_BYTES` (50 MiB by default). It returns filename, MIME type, size, SHA-256 and an MCP `resource_link`.
+
+When `FILE_BRIDGE_EXPORT_DIR` and `FILE_BRIDGE_EXPORT_PUBLIC_BASE_URL` are configured together, the server writes an exact atomic copy below a UUID-scoped directory in the static export root and returns the matching HTTPS URL plus `structuredContent.file_uri`. The static copy is mode `0644`, expires after `FILE_BRIDGE_EXPORT_TTL_MS`, and is removed by startup/periodic cleanup. Without static export configuration, the tool falls back to a short-lived `mcp-file://` resource available through `resources/read`.
+
+The ordinary tool result contains no file body or large base64 payload. Because the tool reserves transport state and may create an externally reachable static copy, its annotations are `readOnlyHint=false`, `destructiveHint=false`, and `openWorldHint=true`.
+
+The returned file reference is a download/materialization reference. Whether a client subsequently authorizes that returned file as a native file-parameter input is client-specific and is not guaranteed by this server.
 
 ### `read_multiple_files`
 
@@ -102,6 +118,21 @@ Returns size, creation/access/modification timestamps, file/directory type and m
 No inputs. Returns the effective allowed directories. MCP Roots updates may replace this set during a session when the client supports Roots notifications.
 
 ## Mutating tools
+
+### `ingest_file`
+
+Inputs:
+
+- `file`: native ChatGPT connector/runtime file parameter; declared through `_meta["openai/fileParams"]` and received by the server as `{download_url, file_id, mime_type?, file_name?}`;
+- `file_name`: optional safe destination filename only;
+- `expected_sha256`: optional expected 64-hex SHA-256;
+- `overwrite`: optional boolean, default `false`.
+
+The caller cannot choose a destination directory. All completed files land below `FILE_BRIDGE_INGRESS_DIR`, default `/tmp/mcp-file-ingress`. The ingress root must itself remain inside the server's existing allowlist. The server rejects traversal, absolute names, path separators, NUL bytes, destination symlinks and ingress-root escapes.
+
+The connector download must use HTTPS and either a configured trusted runtime hostname suffix or the narrowly matched signed OpenAI runtime Azure Blob form `oaisdmntpr<region>.blob.core.windows.net`; arbitrary Azure Blob hosts are rejected. Redirect targets are revalidated. Bytes are streamed without media decoding/re-encoding, counted against `FILE_BRIDGE_MAX_INGEST_BYTES` (50 MiB by default), and hashed as they arrive. The temporary file is fsynced and optional `expected_sha256` is checked before publication. No-clobber publication is atomic; explicit overwrite uses atomic rename. Failures remove temporary files and never publish a hash-mismatched target.
+
+The result contains metadata only: path, optional mapped host path, filename, size, MIME type, SHA-256 and whether an existing target was overwritten. The bridge does not promote, publish, manifest, commit or otherwise govern the staged file.
 
 ### `write_file`
 
