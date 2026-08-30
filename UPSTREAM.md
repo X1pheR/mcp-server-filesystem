@@ -14,7 +14,7 @@ The machine-readable upstream baseline is [`upstream.json`](upstream.json):
 Application behavior intentionally differs from the upstream baseline in two reviewed areas:
 
 1. Existing-file writes performed by `write_file` and non-dry-run `edit_file` write through the existing inode with `O_NOFOLLOW` rather than replacing the path through a temporary-file rename. This preserves file identity, hard links, birth time and existing filesystem metadata that would otherwise be lost when the inode is replaced.
-2. The downstream variant adds `ingest_file` and `export_file` as bounded transport-only extensions. `ingest_file` uses ChatGPT's native file-parameter metadata and a fixed configured staging root. `export_file` returns a short-lived MCP resource link and can materialize a downloadable `structuredContent.file_uri` reference by writing a time-bounded copy into a deployment-configured static HTTPS directory. Neither extension performs lifecycle, publication or Git operations.
+2. The downstream variant adds `ingest_file` and `export_file` as bounded transport-only extensions. `ingest_file` uses ChatGPT's native file-parameter metadata and a fixed configured staging root. `export_file` requires an explicit download/export/attach/transfer intent plus a hard user-materialization confirmation before it can return a short-lived MCP resource link or materialize a downloadable `structuredContent.file_uri` reference. Neither extension performs lifecycle, publication or Git operations.
 
 The repository also contains standalone package/build configuration, regression tests, public documentation and GitHub maintenance automation. Those are packaging and maintenance differences, not additional MCP behavior.
 

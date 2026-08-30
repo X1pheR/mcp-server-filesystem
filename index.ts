@@ -16,6 +16,7 @@ import { normalizePath, expandHome } from './path-utils.js';
 import { getValidRootDirectories } from './roots-utils.js';
 import {
   createExport,
+  EXPORT_INTENTS,
   ingestConnectorFile,
   loadBridgeConfig,
   readExportResource,
@@ -185,6 +186,14 @@ const IngestFileArgsSchema = z.object({
 
 const ExportFileArgsSchema = z.object({
   path: z.string().describe('Existing regular file path within the configured filesystem allowlist.'),
+  intent: z.enum(EXPORT_INTENTS).describe(
+    'The explicit file-egress action requested by the user. Only download, export, attach, or transfer are valid. ' +
+    'Preview, show, open, render, inspect, or display intent must never call this tool.'
+  ),
+  confirm_user_requested_materialization: z.literal(true).describe(
+    'Hard confirmation gate. Set true only when the user explicitly asked to download, export, attach, or transfer this file. ' +
+    'A request to preview, show, open, render, inspect, or display content is not permission.'
+  ),
 });
 
 const FileMetadataOutputSchema = {
@@ -300,29 +309,18 @@ server.registerTool(
   {
     title: "Read Media File",
     description:
-      "Read a file and return it as a base64-encoded content block with its MIME type. " +
-      "Image and audio files are returned as image/audio content; any other file type is " +
-      "returned as an embedded resource. Only works within allowed directories.",
+      "Preview an image or audio file as a native MCP image/audio content block without creating a connector file, resource link, or download copy. " +
+      "This tool is for preview/show/open/render/inspect intent only. Non-media binaries are rejected; use export_file only for an explicit confirmed " +
+      "download/export/attach/transfer request. Only works within allowed directories.",
     inputSchema: {
       path: z.string()
     },
     outputSchema: {
-      content: z.array(z.union([
-        z.object({
-          type: z.enum(["image", "audio"]),
-          data: z.string(),
-          mimeType: z.string()
-        }),
-        z.object({
-          type: z.literal("resource"),
-          resource: z.object({
-            uri: z.string(),
-            // Optional, matching the SDK's BlobResourceContents shape (the handler always sets it).
-            mimeType: z.string().optional(),
-            blob: z.string()
-          })
-        })
-      ]))
+      content: z.array(z.object({
+        type: z.enum(["image", "audio"]),
+        data: z.string(),
+        mimeType: z.string()
+      }))
     },
     annotations: { readOnlyHint: true, openWorldHint: false }
   },
@@ -345,19 +343,15 @@ server.registerTool(
     const mimeType = mimeTypes[extension] || "application/octet-stream";
     const data = await readFileAsBase64Stream(validPath);
 
-    // Map the MIME type to a valid MCP content block. The spec only allows
-    // text, image, audio, resource_link, and resource — so non-image/audio
-    // binaries are returned as an embedded resource (NOT type:"blob", which the
-    // SDK content-block union rejects on schema validation).
-    const contentItem =
-      mimeType.startsWith("image/")
-        ? { type: "image" as const, data, mimeType }
-        : mimeType.startsWith("audio/")
-          ? { type: "audio" as const, data, mimeType }
-          : {
-              type: "resource" as const,
-              resource: { uri: pathToFileURL(validPath).href, mimeType, blob: data }
-            };
+    if (!mimeType.startsWith("image/") && !mimeType.startsWith("audio/")) {
+      throw new Error(
+        'read_media_file supports native image/audio preview only and never exposes generic binary resources. ' +
+        'Use read_text_file for text inspection or export_file only after an explicit confirmed download/export/attach/transfer request.'
+      );
+    }
+    const contentItem = mimeType.startsWith("image/")
+      ? { type: "image" as const, data, mimeType }
+      : { type: "audio" as const, data, mimeType };
     return {
       content: [contentItem],
       structuredContent: { content: [contentItem] }
@@ -402,11 +396,12 @@ server.registerTool(
 server.registerTool(
   'export_file',
   {
-    title: 'Export File',
+    title: 'Export File (Explicit User Egress Only)',
     description:
-      'Expose an existing allowed regular file as a short-lived downloadable file reference plus MCP resource link. ' +
-      'When static export is configured, the tool creates a time-bounded externally reachable copy in the configured staging directory. ' +
-      'It enforces the filesystem allowlist, rejects directories and symlink escapes, applies the configured export size limit, ' +
+      'Materialize an existing allowed regular file as a short-lived downloadable file reference plus MCP resource link ONLY when the user explicitly asked to download, export, attach, or transfer it. ' +
+      'Never use this tool for preview, show, open, render, inspect, or display requests; those intents do not authorize materialization. ' +
+      'The required intent and confirmation fields are enforced before any export ticket, static copy, resource link, or file_uri is created. ' +
+      'The tool also enforces the filesystem allowlist, rejects directories and symlink escapes, applies the configured export size limit, ' +
       'and returns SHA-256 metadata without embedding the binary payload in ordinary tool JSON.',
     inputSchema: ExportFileArgsSchema.shape,
     outputSchema: {
@@ -417,7 +412,14 @@ server.registerTool(
     annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: true },
   },
   async (args: z.infer<typeof ExportFileArgsSchema>) => {
-    const metadata = await createExport(args.path, bridgeConfig);
+    const metadata = await createExport(
+      args.path,
+      {
+        intent: args.intent,
+        confirmUserRequestedMaterialization: args.confirm_user_requested_materialization,
+      },
+      bridgeConfig,
+    );
     return {
       content: [{
         type: 'resource_link' as const,

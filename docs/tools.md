@@ -6,8 +6,8 @@ The server exposes the tracked upstream filesystem tools plus two narrowly scope
 |---|---|---:|---|
 | `read_file` | Read | No | Deprecated text-file reader retained for compatibility; use `read_text_file`. |
 | `read_text_file` | Read | No | Read a text file, optionally limited to its first or last N lines. |
-| `read_media_file` | Read | No | Read media or binary content as an MCP image, audio or embedded resource content block. |
-| `export_file` | Transport | No | Return metadata plus a short-lived downloadable file reference and MCP resource link; configured static export creates an externally reachable temporary copy. |
+| `read_media_file` | Read | No | Preview image or audio content as a native MCP content block; generic binaries are rejected and no file/resource export is created. |
+| `export_file` | Transport | No | Explicitly export/download/attach/transfer a file only after the required user-materialization confirmation; configured static export creates an externally reachable temporary copy. |
 | `read_multiple_files` | Read | No | Read multiple text files in one call; individual file errors are returned without aborting all reads. |
 | `write_file` | Write | Yes | Create a new text file or completely replace the content of an existing file. |
 | `ingest_file` | Write | Yes when replacing; creates staged files otherwise | Stream a native ChatGPT connector file into the fixed configured ingress staging root with SHA-256 and atomic publication. |
@@ -45,15 +45,17 @@ Input:
 
 - `path`: file path.
 
-Known image and audio extensions are returned as image or audio MCP content. Other binary content is returned as an embedded resource with a MIME type and base64 payload.
+Known image and audio extensions are returned as native image or audio MCP content. Other file types are rejected so this preview tool cannot become a generic user-visible resource/materialization path.
 
 ### `export_file`
 
 Input:
 
 - `path`: existing regular file path within the current allowed-directory boundary.
+- `intent`: required explicit egress intent: `download`, `export`, `attach`, or `transfer`.
+- `confirm_user_requested_materialization`: required literal `true`; set it only when the user explicitly requested that egress action. Preview/show/open/render/inspect/display intent is not approval.
 
-The tool rejects directories, non-regular files, paths outside the allowlist, symlink escapes, and files larger than `FILE_BRIDGE_MAX_EXPORT_BYTES` (50 MiB by default). It returns filename, MIME type, size, SHA-256 and an MCP `resource_link`.
+The authorization gate runs before any ticket, copy, `resource_link`, or `file_uri` is created. The tool then rejects directories, non-regular files, paths outside the allowlist, symlink escapes, and files larger than `FILE_BRIDGE_MAX_EXPORT_BYTES` (50 MiB by default). It returns filename, MIME type, size, SHA-256 and an MCP `resource_link`.
 
 When `FILE_BRIDGE_EXPORT_DIR` and `FILE_BRIDGE_EXPORT_PUBLIC_BASE_URL` are configured together, the server writes an exact atomic copy below a UUID-scoped directory in the static export root and returns the matching HTTPS URL plus `structuredContent.file_uri`. The static copy is mode `0644`, expires after `FILE_BRIDGE_EXPORT_TTL_MS`, and is removed by startup/periodic cleanup. Without static export configuration, the tool falls back to a short-lived `mcp-file://` resource available through `resources/read`.
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.7.10-x1pher.9 - 2026-08-30
+
+- Added a fail-closed export authorization contract: `export_file` now requires an explicit `download`, `export`, `attach`, or `transfer` intent plus a hard confirmation that the user requested materialization.
+- Enforced the same authorization in the business layer before any export ticket, static copy, `resource_link`, or `file_uri` can be created, so accidental tool selection cannot materialize a file.
+- Restricted `read_media_file` to native image/audio preview content and removed the generic binary-resource fallback.
+- Added regression coverage for preview/inspect denial, explicit egress approval, read-only inspection, and non-media preview rejection.
+
 ## 2026.7.10-x1pher.8 - 2026-08-29
 
 - Republished the clean generic product state after repository immutable-release protection was enabled; no file-transport behavior changed.
