@@ -14,6 +14,14 @@ const DEFAULT_EXPORT_TTL_MS = 10 * 60 * 1000;
 const MAX_EXPORT_TICKETS = 1024;
 const IO_CHUNK_BYTES = 64 * 1024;
 
+export const EXPORT_INTENTS = ['download', 'export', 'attach', 'transfer'] as const;
+export type ExportIntent = (typeof EXPORT_INTENTS)[number];
+
+export interface ExportAuthorization {
+  intent: ExportIntent;
+  confirmUserRequestedMaterialization: true;
+}
+
 export interface BridgeConfig {
   ingressDir: string;
   maxIngestBytes: number;
@@ -636,10 +644,25 @@ async function materializeStaticExport(
   }
 }
 
+function assertExportAuthorized(authorization: ExportAuthorization | undefined): asserts authorization is ExportAuthorization {
+  if (
+    !authorization
+    || authorization.confirmUserRequestedMaterialization !== true
+    || !EXPORT_INTENTS.includes(authorization.intent)
+  ) {
+    throw new Error(
+      'Export blocked: user-visible file materialization requires an explicit user request to download, export, attach, or transfer the file. ' +
+      'Preview, show, open, render, and inspect requests do not authorize export.',
+    );
+  }
+}
+
 export async function createExport(
   requestedPath: string,
+  authorization: ExportAuthorization | undefined,
   config: BridgeConfig = loadBridgeConfig(),
 ): Promise<ExportMetadata> {
+  assertExportAuthorized(authorization);
   const opened = await openValidatedExportFile(requestedPath);
   try {
     const useStaticExport = Boolean(config.exportDir && config.exportPublicBaseUrl);

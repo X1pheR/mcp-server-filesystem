@@ -92,7 +92,7 @@ Existing targets are refused by default. `overwrite=true` is required to replace
 
 ### Filesystem to runtime: `export_file`
 
-`export_file` accepts one existing path and applies the same filesystem allowlist and symlink-target validation as the rest of the server. Directories and non-regular files are rejected. The default maximum export size is 50 MiB. The server calculates SHA-256 and returns compact metadata plus an MCP `resource_link`.
+`export_file` is an explicit egress operation, not a preview operation. It requires one existing path, an `intent` of `download`, `export`, `attach`, or `transfer`, and `confirm_user_requested_materialization=true`. The confirmation may be supplied only when the user explicitly requested that egress action; preview/show/open/render/inspect/display requests do not authorize it. The authorization guard runs before the server opens or hashes the source, reserves a ticket, creates a static copy, or returns any resource/file reference. The normal filesystem allowlist and symlink-target validation still apply. Directories and non-regular files are rejected, and the default maximum export size is 50 MiB.
 
 `export_file` is intentionally not annotated read-only: even though it never modifies the source file, it reserves short-lived transport state and, when static export is configured, creates an externally reachable temporary copy. For HTTPS file download and host-side materialization, configure a directory already served by a trusted HTTPS static file server. The bridge creates a UUID-scoped directory, writes an exact bounded copy atomically, and returns `structuredContent.file_uri` with the resulting HTTPS URL, opaque file ID, MIME type, and filename. For example:
 
@@ -107,7 +107,7 @@ A returned tool file reference makes the exported bytes available to file-aware 
 
 When static export is not configured, `export_file` falls back to a short-lived `mcp-file://` resource that compatible MCP clients can resolve through `resources/read`. The ordinary tool result never embeds the file body or a large base64 value.
 
-`read_media_file` remains available for media display/backward compatibility and is not the preferred mechanism for downloadable connector-file export.
+`read_media_file` is a native preview path for images and audio only. It never creates a connector `file_uri`, download copy, or generic binary MCP resource; non-media binaries are rejected. Text inspection should use `read_text_file`, while downloadable/attachable egress must use the explicitly confirmed `export_file` path.
 
 ### Bridge configuration
 
@@ -131,7 +131,7 @@ The allowed-directory boundary and MCP Roots handling remain the primary filesys
 
 For existing-file writes, `O_NOFOLLOW` prevents the downstream in-place writer from following a symlink opened at the target path. This preserves the intended symlink-race protection while avoiding inode replacement.
 
-Bridge ingress uses a separate fixed staging root, validates the real ingress path against the same allowlist, refuses destination symlinks, restricts connector downloads to HTTPS on configured trusted suffixes or the narrowly matched signed OpenAI runtime Azure Blob pattern, enforces byte limits while streaming, and publishes only after optional SHA-256 verification. Export revalidates the source path and file identity before creating a bounded static copy or fallback MCP resource. Static export directories are explicit deployment configuration, UUID-scoped, time-bounded and cleaned automatically.
+Bridge ingress uses a separate fixed staging root, validates the real ingress path against the same allowlist, refuses destination symlinks, restricts connector downloads to HTTPS on configured trusted suffixes or the narrowly matched signed OpenAI runtime Azure Blob pattern, enforces byte limits while streaming, and publishes only after optional SHA-256 verification. Export first enforces the explicit egress-intent and user-materialization confirmation gate, then revalidates the source path and file identity before creating a bounded static copy or fallback MCP resource. Static export directories are explicit deployment configuration, UUID-scoped, time-bounded and cleaned automatically.
 
 The server does not provide authentication or authorization beyond its filesystem boundary and connector trust boundary. Restrict which directories are exposed and which MCP clients can invoke mutating tools according to the deployment environment.
 

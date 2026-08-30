@@ -15,6 +15,7 @@ import {
   validateConnectorDownloadUrl,
   type BridgeConfig,
   type ConnectorFileInput,
+  type ExportAuthorization,
 } from '../file-bridge.js';
 import { setAllowedDirectories } from '../lib.js';
 
@@ -40,6 +41,10 @@ function configFor(root: string, maxIngestBytes = 1024 * 1024, maxExportBytes = 
     connectorDownloadHostSuffixes: ['oaiusercontent.com'],
     exportTtlMs: 10 * 60 * 1000,
   };
+}
+
+function exportAuthorization(intent: ExportAuthorization['intent'] = 'download'): ExportAuthorization {
+  return { intent, confirmUserRequestedMaterialization: true };
 }
 
 function connectorFile(fileName = 'source.bin', mimeType = 'application/octet-stream'): ConnectorFileInput {
@@ -289,7 +294,7 @@ describe('static file export transport', () => {
       exportPublicBaseUrl: 'https://downloads.example.com/tmp',
     };
 
-    const exported = await createExport(file, config);
+    const exported = await createExport(file, exportAuthorization(), config);
     expect(exported.resource_uri).toMatch(
       /^https:\/\/downloads\.example\.com\/tmp\/[0-9a-f-]{36}\/download%20me\.png$/i,
     );
@@ -336,6 +341,22 @@ describe('static file export transport', () => {
 });
 
 describe('file export', () => {
+  it('blocks the business-layer export path without explicit user materialization authorization', async () => {
+    const root = await makeDirectory();
+    const staticRoot = await makeDirectory('mcp-file-export-static-');
+    setAllowedDirectories([root]);
+    const file = path.join(root, 'preview.html');
+    await fs.writeFile(file, '<!doctype html><title>Preview</title>');
+    const config: BridgeConfig = {
+      ...configFor(root),
+      exportDir: staticRoot,
+      exportPublicBaseUrl: 'https://downloads.example.com/tmp',
+    };
+
+    await expect(createExport(file, undefined, config)).rejects.toThrow(/explicit user request/);
+    expect(await fs.readdir(staticRoot)).toEqual([]);
+  });
+
   it('13-15. exports an allowed PNG as an MCP resource with identical bytes and SHA-256', async () => {
     const root = await makeDirectory();
     setAllowedDirectories([root]);
@@ -344,7 +365,7 @@ describe('file export', () => {
     const file = path.join(root, 'allowed.png');
     await fs.writeFile(file, bytes);
 
-    const exported = await createExport(file, config);
+    const exported = await createExport(file, exportAuthorization(), config);
     const token = exported.resource_uri.split('/').at(-1)!;
     const resource = await readExportResource(token, exported.resource_uri, config);
 
@@ -361,7 +382,7 @@ describe('file export', () => {
     setAllowedDirectories([root]);
     const file = path.join(outside, 'outside.bin');
     await fs.writeFile(file, 'outside');
-    await expect(createExport(file, configFor(root))).rejects.toThrow(/outside allowed directories/);
+    await expect(createExport(file, exportAuthorization(), configFor(root))).rejects.toThrow(/outside allowed directories/);
   });
 
   it('17. rejects a symlink escape during export', async () => {
@@ -372,13 +393,13 @@ describe('file export', () => {
     const link = path.join(root, 'escape.bin');
     await fs.writeFile(target, 'outside');
     await fs.symlink(target, link);
-    await expect(createExport(link, configFor(root))).rejects.toThrow(/symlink target outside allowed directories/);
+    await expect(createExport(link, exportAuthorization(), configFor(root))).rejects.toThrow(/symlink target outside allowed directories/);
   });
 
   it('18. rejects directory export', async () => {
     const root = await makeDirectory();
     setAllowedDirectories([root]);
-    await expect(createExport(root, configFor(root))).rejects.toThrow(/directory/);
+    await expect(createExport(root, exportAuthorization(), configFor(root))).rejects.toThrow(/directory/);
   });
 
   it('19. rejects oversized export', async () => {
@@ -386,7 +407,7 @@ describe('file export', () => {
     setAllowedDirectories([root]);
     const file = path.join(root, 'large.bin');
     await fs.writeFile(file, Uint8Array.from([1, 2, 3, 4, 5]));
-    await expect(createExport(file, configFor(root, 1024, 4))).rejects.toThrow(/maximum export size/);
+    await expect(createExport(file, exportAuthorization(), configFor(root, 1024, 4))).rejects.toThrow(/maximum export size/);
   });
 });
 
@@ -402,7 +423,7 @@ describe('binary round trip', () => {
       config,
       fetchBytes(fixture),
     );
-    const exported = await createExport(ingested.path, config);
+    const exported = await createExport(ingested.path, exportAuthorization(), config);
     const token = exported.resource_uri.split('/').at(-1)!;
     const resource = await readExportResource(token, exported.resource_uri, config);
     const roundTripped = Buffer.from(resource.blob, 'base64');
