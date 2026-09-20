@@ -123,6 +123,64 @@ describe('structuredContent schema compliance', () => {
     });
   });
 
+  describe('append_text_file', () => {
+    it('appends at physical EOF and returns bounded append evidence', async () => {
+      const file = path.join(testDir, 'append.log');
+      await fs.writeFile(file, 'first\nrepeat\nrepeat\n', { mode: 0o640 });
+
+      const result = await client.callTool({
+        name: 'append_text_file',
+        arguments: { path: file, content: 'repeat\nlast\n' }
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(await fs.readFile(file, 'utf-8')).toBe('first\nrepeat\nrepeat\nrepeat\nlast\n');
+      expect(result.structuredContent).toMatchObject({
+        path: file,
+        bytes_appended: Buffer.byteLength('repeat\nlast\n', 'utf-8'),
+        post_size: Buffer.byteLength('first\nrepeat\nrepeat\nrepeat\nlast\n', 'utf-8'),
+        tail_check: {
+          matches: true,
+          bytes: Buffer.byteLength('repeat\nlast\n', 'utf-8')
+        }
+      });
+      expect((result.structuredContent as any).tail_check.sha256).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
+
+  describe('append_text_file symlink safety', () => {
+    it('rejects a symlink path and leaves its target unchanged', async () => {
+      const target = path.join(testDir, 'target.log');
+      const link = path.join(testDir, 'link.log');
+      await fs.writeFile(target, 'protected\n');
+      await fs.symlink(target, link);
+
+      const result = await client.callTool({
+        name: 'append_text_file',
+        arguments: { path: link, content: 'should-not-append\n' }
+      });
+
+      expect(result.isError).toBe(true);
+      expect(await fs.readFile(target, 'utf-8')).toBe('protected\n');
+    });
+  });
+
+  describe('append_text_file text safety', () => {
+    it('rejects a clearly binary target and leaves it byte-identical', async () => {
+      const file = path.join(testDir, 'binary.dat');
+      const before = Buffer.from([0x00, 0x01, 0x02, 0xff, 0x00]);
+      await fs.writeFile(file, before);
+
+      const result = await client.callTool({
+        name: 'append_text_file',
+        arguments: { path: file, content: 'text\n' }
+      });
+
+      expect(result.isError).toBe(true);
+      expect((await fs.readFile(file)).equals(before)).toBe(true);
+    });
+  });
+
   describe('list_directory (control - already working)', () => {
     it('should return structuredContent.content as a string', async () => {
       const result = await client.callTool({

@@ -1,5 +1,7 @@
 import fs from "fs/promises";
 import { constants } from 'fs';
+import { createHash } from 'crypto';
+import { TextDecoder } from 'util';
 import path from "path";
 import os from 'os';
 import { diffLines, createTwoFilesPatch } from 'diff';
@@ -96,7 +98,11 @@ function resolveRelativePathAgainstAllowedDirectories(relativePath: string): str
 }
 
 // Security & Validation Functions
-export async function validatePath(requestedPath: string): Promise<string> {
+export interface ValidatePathOptions {
+  rejectFinalSymlink?: boolean;
+}
+
+export async function validatePath(requestedPath: string, options: ValidatePathOptions = {}): Promise<string> {
   const expandedPath = expandHome(requestedPath);
   const absolute = path.isAbsolute(expandedPath)
     ? path.resolve(expandedPath)
@@ -113,6 +119,12 @@ export async function validatePath(requestedPath: string): Promise<string> {
   // Security: Handle symlinks by checking their real path to prevent symlink attacks
   // This prevents attackers from creating symlinks that point outside allowed directories
   try {
+    if (options.rejectFinalSymlink) {
+      const linkStats = await fs.lstat(absolute);
+      if (linkStats.isSymbolicLink()) {
+        throw new Error(`Access denied - final path is a symlink: ${absolute}`);
+      }
+    }
     const realPath = await fs.realpath(absolute);
     const normalizedReal = normalizePath(realPath);
     if (!isPathWithinAllowedDirectories(normalizedReal, allowedDirectories)) {
@@ -156,6 +168,67 @@ export async function getFileStats(filePath: string): Promise<FileInfo> {
 
 export async function readFileContent(filePath: string, encoding: string = 'utf-8'): Promise<string> {
   return await fs.readFile(filePath, encoding as BufferEncoding);
+}
+
+export interface AppendFileResult {
+  bytesAppended: number;
+  postSize: number;
+  tailCheck: {
+    matches: true;
+    bytes: number;
+    sha256: string;
+  };
+}
+
+export async function appendFileContent(filePath: string, content: string): Promise<AppendFileResult> {
+  const payload = Buffer.from(content, 'utf-8');
+  const fh = await fs.open(filePath, constants.O_RDWR | constants.O_APPEND | constants.O_NOFOLLOW);
+  try {
+    const before = await fh.stat();
+    if (!before.isFile()) {
+      throw new Error(`Append target is not a regular file: ${filePath}`);
+    }
+
+    const sampleLength = Math.min(before.size, 64 * 1024);
+    if (sampleLength > 0) {
+      const sample = Buffer.alloc(sampleLength);
+      const sampleRead = await fh.read(sample, 0, sampleLength, 0);
+      const observed = sample.subarray(0, sampleRead.bytesRead);
+      if (observed.includes(0)) {
+        throw new Error(`Append target is not a supported text file: ${filePath}`);
+      }
+      try {
+        new TextDecoder('utf-8', { fatal: true }).decode(observed);
+      } catch {
+        throw new Error(`Append target is not valid UTF-8 text: ${filePath}`);
+      }
+    }
+
+    const written = await fh.write(payload, 0, payload.length, null);
+    if (written.bytesWritten !== payload.length) {
+      throw new Error(`Append wrote ${written.bytesWritten} of ${payload.length} bytes: ${filePath}`);
+    }
+    await fh.sync();
+
+    const after = await fh.stat();
+    const tail = Buffer.alloc(payload.length);
+    const read = await fh.read(tail, 0, payload.length, after.size - payload.length);
+    if (read.bytesRead !== payload.length || !tail.equals(payload)) {
+      throw new Error(`Physical EOF verification failed after append: ${filePath}`);
+    }
+
+    return {
+      bytesAppended: payload.length,
+      postSize: after.size,
+      tailCheck: {
+        matches: true,
+        bytes: payload.length,
+        sha256: createHash('sha256').update(payload).digest('hex'),
+      },
+    };
+  } finally {
+    await fh.close();
+  }
 }
 
 export async function writeFileContent(filePath: string, content: string): Promise<void> {

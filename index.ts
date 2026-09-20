@@ -29,6 +29,7 @@ import {
   validatePath,
   getFileStats,
   readFileContent,
+  appendFileContent,
   writeFileContent,
   searchFilesWithValidation,
   applyFileEdits,
@@ -120,6 +121,11 @@ const ReadMultipleFilesArgsSchema = z.object({
 });
 
 const WriteFileArgsSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+});
+
+const AppendTextFileArgsSchema = z.object({
   path: z.string(),
   content: z.string(),
 });
@@ -495,6 +501,48 @@ server.registerTool(
     return {
       content: [{ type: "text" as const, text }],
       structuredContent: { content: text }
+    };
+  }
+);
+
+server.registerTool(
+  "append_text_file",
+  {
+    title: "Append Text File",
+    description:
+      "Append exact UTF-8 text to an existing regular file at physical EOF without replacing or truncating prior bytes. " +
+      "The operation preserves the existing inode and mode, refuses missing files and symlink targets at open time, " +
+      "syncs the append, then verifies the appended bytes are the physical file tail. " +
+      "Returns bounded append metadata and SHA-256 evidence without returning file contents. Only works within allowed directories.",
+    inputSchema: AppendTextFileArgsSchema.shape,
+    outputSchema: {
+      path: z.string(),
+      bytes_appended: z.number().int().nonnegative(),
+      post_size: z.number().int().nonnegative(),
+      tail_check: z.object({
+        matches: z.literal(true),
+        bytes: z.number().int().nonnegative(),
+        sha256: z.string(),
+      }),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: false }
+  },
+  async (args: z.infer<typeof AppendTextFileArgsSchema>) => {
+    const validPath = await validatePath(args.path, { rejectFinalSymlink: true });
+    const result = await appendFileContent(validPath, args.content);
+    const structuredContent = {
+      path: args.path,
+      bytes_appended: result.bytesAppended,
+      post_size: result.postSize,
+      tail_check: {
+        matches: result.tailCheck.matches,
+        bytes: result.tailCheck.bytes,
+        sha256: result.tailCheck.sha256,
+      },
+    };
+    return {
+      content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
+      structuredContent,
     };
   }
 );
