@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.7.10-x1pher.10 - 2026-09-20
+
+- Added `append_text_file` for exact UTF-8 append at physical EOF without truncating or replacing prior bytes.
+- The append path preserves the existing inode/mode, rejects final symlinks and clearly non-text targets, fsyncs the append, and verifies the exact appended bytes at physical EOF before returning success.
+- Added bounded postcondition metadata (`bytes_appended`, `post_size`, and SHA-256-backed `tail_check`) so append-only governance can verify placement without rereading unrelated file content.
+- Added integration and downstream inode/safety regression coverage for repeated text, UTF-8 payloads, symlink denial and binary-target denial.
+
 ## 2026.7.10-x1pher.9 - 2026-08-30
 
 - Added a fail-closed export authorization contract: `export_file` now requires an explicit `download`, `export`, `attach`, or `transfer` intent plus a hard confirmation that the user requested materialization.

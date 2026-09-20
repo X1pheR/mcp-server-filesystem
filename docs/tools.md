@@ -1,6 +1,6 @@
 # Tool reference
 
-The server exposes the tracked upstream filesystem tools plus two narrowly scoped connector file-transport extensions. Every filesystem path remains constrained by the server's allowed-directory boundary.
+The server exposes the tracked upstream filesystem tools plus two narrowly scoped connector file-transport extensions and the downstream `append_text_file` append primitive. Every filesystem path remains constrained by the server's allowed-directory boundary.
 
 | Tool | Access | Destructive | Purpose |
 |---|---|---:|---|
@@ -10,6 +10,7 @@ The server exposes the tracked upstream filesystem tools plus two narrowly scope
 | `export_file` | Transport | No | Explicitly export/download/attach/transfer a file only after the required user-materialization confirmation; configured static export creates an externally reachable temporary copy. |
 | `read_multiple_files` | Read | No | Read multiple text files in one call; individual file errors are returned without aborting all reads. |
 | `write_file` | Write | Yes | Create a new text file or completely replace the content of an existing file. |
+| `append_text_file` | Write | No prior-byte replacement | Append exact UTF-8 text to an existing regular text file at physical EOF and verify the exact tail bytes before returning success. |
 | `ingest_file` | Write | Yes when replacing; creates staged files otherwise | Stream a native ChatGPT connector file into the fixed configured ingress staging root with SHA-256 and atomic publication. |
 | `edit_file` | Write | Yes when `dryRun=false` | Apply line-based text replacements and return a unified diff; `dryRun=true` previews without writing. |
 | `create_directory` | Write | No | Create a directory and any missing parent directories; succeeds when the directory already exists. |
@@ -151,6 +152,17 @@ Consequences for existing files:
 - inode-associated metadata such as mode remains attached to the same inode;
 - symlink targets are not followed by the in-place writer;
 - rename atomicity is intentionally not provided, so interruption after truncation can leave partial content.
+
+### `append_text_file`
+
+Inputs:
+
+- `path`: existing regular UTF-8 text file;
+- `content`: exact UTF-8 text to append.
+
+The tool never creates, truncates or replaces the target. It rejects a final symlink before path resolution, opens the existing inode with `O_APPEND | O_NOFOLLOW`, rejects clearly binary/NUL-containing or invalid UTF-8 targets, appends and fsyncs the exact payload, then reads back exactly the appended byte count from physical EOF. Success returns only bounded metadata: `bytes_appended`, `post_size`, and `tail_check` containing `matches=true`, byte count and SHA-256 of the appended payload. Repeated or duplicate text elsewhere in the file is irrelevant to placement.
+
+The operation is deliberately non-idempotent: invoking it twice appends twice. Callers must therefore use it only for an explicitly intended append and must not retry an ambiguous invocation without first reconciling the file tail/postcondition.
 
 ### `edit_file`
 

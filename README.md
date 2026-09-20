@@ -10,7 +10,7 @@ This is a community-maintained integration. It is not affiliated with, endorsed 
 
 The upstream `2026.7.10` filesystem server replaces an existing file through a temporary-file rename. That is rename-atomic, but it replaces the inode and can therefore break file-bind consumers or discard inode-associated metadata.
 
-This variant has two explicit downstream behavior deltas. Existing text-file replacement opens the existing file with `O_NOFOLLOW`, truncates it and writes the new content through the same file handle, preserving file identity, hard links, mode and other inode-associated metadata. The connector file bridge adds native connector-file ingress and downloadable file-reference export without routing binary payloads through ordinary model-visible tool JSON.
+This variant has three explicit downstream behavior deltas. Existing text-file replacement opens the existing file with `O_NOFOLLOW`, truncates it and writes the new content through the same file handle, preserving file identity, hard links, mode and other inode-associated metadata. `append_text_file` appends exact UTF-8 bytes to an existing text file at physical EOF without truncating or replacing prior bytes and returns bounded tail-verification evidence. The connector file bridge adds native connector-file ingress and downloadable file-reference export without routing binary payloads through ordinary model-visible tool JSON.
 
 The existing-write tradeoff is explicit: an interrupted in-place text write can leave partial content after truncation. This variant therefore favors inode and metadata preservation over rename atomicity for existing text files. Bridge ingress uses separate atomic publication semantics and is not affected by that tradeoff.
 
@@ -62,9 +62,9 @@ The server retains the upstream filesystem tools and adds two deliberately narro
 |---|---|
 | Read | `read_file` (deprecated), `read_text_file`, `read_media_file`, `read_multiple_files`, `list_directory`, `list_directory_with_sizes`, `directory_tree`, `search_files`, `get_file_info`, `list_allowed_directories` |
 | File transport | `export_file`, `ingest_file` |
-| Filesystem write | `write_file`, `edit_file`, `create_directory`, `move_file` |
+| Filesystem write | `write_file`, `append_text_file`, `edit_file`, `create_directory`, `move_file` |
 
-See [`docs/tools.md`](docs/tools.md) for the complete 16-tool reference, including access and destructive classifications, important inputs and mutation semantics.
+See [`docs/tools.md`](docs/tools.md) for the complete 17-tool reference, including access and destructive classifications, important inputs and mutation semantics.
 
 ## Bidirectional connector file bridge
 
@@ -129,7 +129,7 @@ The bridge never broadens the general filesystem allowlist. Static export is a s
 
 The allowed-directory boundary and MCP Roots handling remain the primary filesystem authorization boundary inherited from upstream. Paths are validated against that boundary and symlink targets outside it are rejected.
 
-For existing-file writes, `O_NOFOLLOW` prevents the downstream in-place writer from following a symlink opened at the target path. This preserves the intended symlink-race protection while avoiding inode replacement.
+For existing-file writes, `O_NOFOLLOW` prevents the downstream in-place writer from following a symlink opened at the target path. This preserves the intended symlink-race protection while avoiding inode replacement. `append_text_file` additionally rejects a final symlink before path resolution, requires an existing regular UTF-8 text target, fsyncs the append and verifies that the exact payload is the physical file tail before returning success.
 
 Bridge ingress uses a separate fixed staging root, validates the real ingress path against the same allowlist, refuses destination symlinks, restricts connector downloads to HTTPS on configured trusted suffixes or the narrowly matched signed OpenAI runtime Azure Blob pattern, enforces byte limits while streaming, and publishes only after optional SHA-256 verification. Export first enforces the explicit egress-intent and user-materialization confirmation gate, then revalidates the source path and file identity before creating a bounded static copy or fallback MCP resource. Static export directories are explicit deployment configuration, UUID-scoped, time-bounded and cleaned automatically.
 
@@ -171,7 +171,7 @@ npm pack --ignore-scripts --dry-run
 
 CI uses the same install, test and build contract. A weekly upstream check reports when the upstream repository publishes a release different from the baseline in `upstream.json`. Dependabot refreshes locked npm dependencies within the declared compatibility ranges and tracks GitHub Actions revisions; changes to declared major-version boundaries remain explicit compatibility work. OpenSSF Scorecard runs on `main` and weekly and publishes its public result for independent repository-security review.
 
-The current immutable downstream release is `v2026.7.10-x1pher.1`. Normal development does not publish a release. An accepted version tag matching `v${package.json.version}` triggers the release workflow, which verifies the exact tag/source/package version, reruns locked verification, proves two independent packed npm artifacts are byte-identical, generates signed GitHub/Sigstore build provenance, creates a draft release, attaches the package, `SHA256SUMS` and provenance bundle, and only then publishes the release. The project deliberately does not publish to npm.
+The current immutable downstream release is `v2026.7.10-x1pher.10`. Normal development does not publish a release. An accepted version tag matching `v${package.json.version}` triggers the release workflow, which verifies the exact tag/source/package version, reruns locked verification, proves two independent packed npm artifacts are byte-identical, generates signed GitHub/Sigstore build provenance, creates a draft release, attaches the package, `SHA256SUMS` and provenance bundle, and only then publishes the release. The project deliberately does not publish to npm.
 
 Security reports are handled according to [`SECURITY.md`](SECURITY.md).
 
