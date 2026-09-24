@@ -1,12 +1,13 @@
 # Tool reference
 
-The server exposes the tracked upstream filesystem tools plus two narrowly scoped connector file-transport extensions and the downstream `append_text_file` append primitive. Every filesystem path remains constrained by the server's allowed-directory boundary.
+The server exposes the tracked upstream filesystem tools plus narrowly scoped connector/file transport extensions and the downstream `append_text_file` append primitive. Every filesystem path remains constrained by the server's allowed-directory boundary.
 
 | Tool | Access | Destructive | Purpose |
 |---|---|---:|---|
 | `read_file` | Read | No | Deprecated text-file reader retained for compatibility; use `read_text_file`. |
 | `read_text_file` | Read | No | Read a text file, optionally limited to its first or last N lines. |
 | `read_media_file` | Read | No | Preview image or audio content as a native MCP content block; generic binaries are rejected and no file/resource export is created. |
+| `preview_file` | Private preview transport | No | Create a short-lived private MCP resource for an allowed regular file so a client can render/materialize it for preview without public/static export or download egress. |
 | `export_file` | Transport | No | Explicitly export/download/attach/transfer a file only after the required user-materialization confirmation; configured static export creates an externally reachable temporary copy. |
 | `read_multiple_files` | Read | No | Read multiple text files in one call; individual file errors are returned without aborting all reads. |
 | `write_file` | Write | Yes | Create a new text file or completely replace the content of an existing file. |
@@ -47,6 +48,16 @@ Input:
 - `path`: file path.
 
 Known image and audio extensions are returned as native image or audio MCP content. Other file types are rejected so this preview tool cannot become a generic user-visible resource/materialization path.
+
+### `preview_file`
+
+Input:
+
+- `path`: existing regular file path within the current allowed-directory boundary.
+
+`preview_file` is the non-egress counterpart to `export_file`. It MUST create only a short-lived private `mcp-file://preview/...` resource and MUST NOT create a static/public copy, `file_uri`, download URL or other externally reachable transport, even when static export is configured. It validates the same allowed-path, regular-file, symlink and maximum-size boundaries used by file export, records the exact filename, MIME type, size and SHA-256, and revalidates file identity/integrity when the resource is read.
+
+The preview resource is transport-only and ephemeral. It does not authorize download/export/attach/transfer, does not weaken the `export_file` confirmation gate, and does not modify the source file. HTML filenames are reported as `text/html` so a supporting client can materialize them as runnable HTML rather than `application/octet-stream`.
 
 ### `export_file`
 

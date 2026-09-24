@@ -7,10 +7,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   clearExportTicketsForTests,
   createExport,
+  createPreview,
   cleanupExpiredStaticExports,
   inferMimeType,
   ingestConnectorFile,
   readExportResource,
+  readPreviewResource,
   sanitizeFileName,
   validateConnectorDownloadUrl,
   type BridgeConfig,
@@ -155,6 +157,8 @@ describe('connector file ingest', () => {
     expect(second.file_name).toBe('safe_name.zip');
     expect(second.mime_type).toBe('application/octet-stream');
     expect(inferMimeType('archive.zip')).toBe('application/zip');
+    expect(inferMimeType('preview.html')).toBe('text/html');
+    expect(inferMimeType('preview.htm')).toBe('text/html');
     expect(sanitizeFileName(' café.png ')).toBe('café.png');
   });
 
@@ -337,6 +341,76 @@ describe('static file export transport', () => {
     await expect(fs.stat(expired)).rejects.toMatchObject({ code: 'ENOENT' });
     expect((await fs.stat(fresh)).isDirectory()).toBe(true);
     expect((await fs.stat(unrelated)).isDirectory()).toBe(true);
+  });
+});
+
+describe('private file preview', () => {
+  it('creates a private HTML preview resource without static/public materialization', async () => {
+    const root = await makeDirectory();
+    const staticRoot = await makeDirectory('mcp-file-preview-static-');
+    setAllowedDirectories([root]);
+    const file = path.join(root, 'preview.html');
+    const bytes = Buffer.from('<!doctype html><title>Preview</title>');
+    await fs.writeFile(file, bytes);
+    const config: BridgeConfig = {
+      ...configFor(root),
+      exportDir: staticRoot,
+      exportPublicBaseUrl: 'https://downloads.example.com/tmp',
+    };
+
+    const preview = await createPreview(file, config);
+    expect(preview.resource_uri).toMatch(/^mcp-file:\/\/preview\/[0-9a-f-]{36}$/i);
+    expect(preview.mime_type).toBe('text/html');
+    expect(preview.sha256).toBe(sha256(bytes));
+    expect(preview.size).toBe(bytes.byteLength);
+    expect('file_uri' in preview).toBe(false);
+    expect(await fs.readdir(staticRoot)).toEqual([]);
+
+    const token = preview.resource_uri.split('/').at(-1)!;
+    const resource = await readPreviewResource(token, preview.resource_uri, config);
+    expect(resource.mimeType).toBe('text/html');
+    expect(Buffer.from(resource.blob, 'base64').equals(bytes)).toBe(true);
+  });
+
+  it('revalidates the source file before serving a private preview resource', async () => {
+    const root = await makeDirectory();
+    setAllowedDirectories([root]);
+    const file = path.join(root, 'preview.html');
+    await fs.writeFile(file, '<!doctype html><title>Before</title>');
+    const config = configFor(root);
+    const preview = await createPreview(file, config);
+    const token = preview.resource_uri.split('/').at(-1)!;
+
+    await fs.writeFile(file, '<!doctype html><title>After</title>');
+    await expect(readPreviewResource(token, preview.resource_uri, config)).rejects.toThrow(/changed/);
+  });
+
+  it('rejects preview paths outside the allowed directory', async () => {
+    const root = await makeDirectory();
+    const outside = await makeDirectory('mcp-file-preview-outside-');
+    setAllowedDirectories([root]);
+    const file = path.join(outside, 'outside.html');
+    await fs.writeFile(file, '<!doctype html>');
+    await expect(createPreview(file, configFor(root))).rejects.toThrow(/outside allowed directories/);
+  });
+
+  it('rejects a preview symlink escape', async () => {
+    const root = await makeDirectory();
+    const outside = await makeDirectory('mcp-file-preview-outside-');
+    setAllowedDirectories([root]);
+    const target = path.join(outside, 'outside.html');
+    const link = path.join(root, 'escape.html');
+    await fs.writeFile(target, '<!doctype html>');
+    await fs.symlink(target, link);
+    await expect(createPreview(link, configFor(root))).rejects.toThrow(/symlink target outside allowed directories/);
+  });
+
+  it('rejects an oversized preview', async () => {
+    const root = await makeDirectory();
+    setAllowedDirectories([root]);
+    const file = path.join(root, 'large.html');
+    await fs.writeFile(file, Uint8Array.from([1, 2, 3, 4, 5]));
+    await expect(createPreview(file, configFor(root, 1024, 4))).rejects.toThrow(/maximum export size/);
   });
 });
 

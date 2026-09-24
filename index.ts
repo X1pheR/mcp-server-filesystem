@@ -16,10 +16,12 @@ import { normalizePath, expandHome } from './path-utils.js';
 import { getValidRootDirectories } from './roots-utils.js';
 import {
   createExport,
+  createPreview,
   EXPORT_INTENTS,
   ingestConnectorFile,
   loadBridgeConfig,
   readExportResource,
+  readPreviewResource,
   startStaticExportCleanup,
   type ConnectorFileInput,
 } from './file-bridge.js';
@@ -190,6 +192,10 @@ const IngestFileArgsSchema = z.object({
   overwrite: z.boolean().optional().default(false).describe('Replace an existing ingress file only when explicitly true.'),
 });
 
+const PreviewFileArgsSchema = z.object({
+  path: z.string().describe('Existing regular file path within the configured filesystem allowlist.'),
+});
+
 const ExportFileArgsSchema = z.object({
   path: z.string().describe('Existing regular file path within the configured filesystem allowlist.'),
   intent: z.enum(EXPORT_INTENTS).describe(
@@ -229,6 +235,17 @@ server.registerResource(
   },
   async (uri, variables) => ({
     contents: [await readExportResource(variables.token, uri.href, bridgeConfig)],
+  }),
+);
+
+server.registerResource(
+  'Preview file',
+  new ResourceTemplate('mcp-file://preview/{token}', { list: undefined }),
+  {
+    description: 'Short-lived private resource created by preview_file. It never creates a static/public export and is revalidated before every read.',
+  },
+  async (uri, variables) => ({
+    contents: [await readPreviewResource(variables.token, uri.href, bridgeConfig)],
   }),
 );
 
@@ -394,6 +411,38 @@ server.registerTool(
     );
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(metadata) }],
+      structuredContent: metadata,
+    };
+  },
+);
+
+server.registerTool(
+  'preview_file',
+  {
+    title: 'Preview File (Private Resource Only)',
+    description:
+      'Create a short-lived private MCP resource for preview/render/materialization of an existing allowed regular file. ' +
+      'This tool never creates a static/public copy, file_uri, download URL or other externally reachable transport, even when export_file static staging is configured. ' +
+      'It validates the filesystem allowlist, rejects directories and symlink escapes, applies the configured file-size limit, records SHA-256 metadata, and revalidates source identity before resource reads. ' +
+      'Use export_file instead only for an explicit user-requested download/export/attach/transfer action.',
+    inputSchema: PreviewFileArgsSchema.shape,
+    outputSchema: {
+      ...FileMetadataOutputSchema,
+      resource_uri: z.string(),
+    },
+    annotations: { readOnlyHint: false, idempotentHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async (args: z.infer<typeof PreviewFileArgsSchema>) => {
+    const metadata = await createPreview(args.path, bridgeConfig);
+    return {
+      content: [{
+        type: 'resource_link' as const,
+        uri: metadata.resource_uri,
+        name: metadata.file_name,
+        title: metadata.file_name,
+        mimeType: metadata.mime_type,
+        size: metadata.size,
+      }],
       structuredContent: metadata,
     };
   },

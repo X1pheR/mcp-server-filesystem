@@ -66,6 +66,10 @@ export interface ExportMetadata extends FileMetadata {
   file_uri?: ConnectorFileInput;
 }
 
+export interface PreviewMetadata extends FileMetadata {
+  resource_uri: string;
+}
+
 interface ExportTicket {
   path: string;
   fileName: string;
@@ -87,6 +91,7 @@ export interface ExportResource {
 export type FetchLike = typeof fetch;
 
 const exportTickets = new Map<string, ExportTicket>();
+const previewTickets = new Map<string, ExportTicket>();
 
 function parsePositiveInteger(raw: string | undefined, fallback: number, name: string): number {
   if (raw === undefined || raw === '') return fallback;
@@ -276,6 +281,8 @@ export function inferMimeType(fileName: string, providedMimeType?: string): stri
     '.json': 'application/json',
     '.txt': 'text/plain',
     '.csv': 'text/csv',
+    '.html': 'text/html',
+    '.htm': 'text/html',
     '.mp3': 'audio/mpeg',
     '.wav': 'audio/wav',
     '.ogg': 'audio/ogg',
@@ -561,6 +568,17 @@ function reserveExportTicket(token: string, ticket: ExportTicket): void {
   exportTickets.set(token, ticket);
 }
 
+function reservePreviewTicket(token: string, ticket: ExportTicket): void {
+  const now = Date.now();
+  for (const [existingToken, existing] of previewTickets) {
+    if (existing.expiresAt < now) previewTickets.delete(existingToken);
+  }
+  if (previewTickets.size >= MAX_EXPORT_TICKETS) {
+    throw new Error('Too many active preview resources; retry after an existing preview expires');
+  }
+  previewTickets.set(token, ticket);
+}
+
 async function openValidatedExportFile(requestedPath: string): Promise<{ path: string; handle: FileHandle }> {
   const validPath = await validatePath(requestedPath);
   const stats = await fs.stat(validPath);
@@ -644,6 +662,44 @@ async function materializeStaticExport(
   }
 }
 
+export async function createPreview(
+  requestedPath: string,
+  config: BridgeConfig = loadBridgeConfig(),
+): Promise<PreviewMetadata> {
+  const opened = await openValidatedExportFile(requestedPath);
+  try {
+    const hashed = await hashOpenFile(opened.handle, config.maxExportBytes, false);
+    const fileName = path.basename(opened.path);
+    const mimeType = inferMimeType(fileName);
+    const token = randomUUID();
+    const uri = `mcp-file://preview/${token}`;
+
+    reservePreviewTicket(token, {
+      path: opened.path,
+      fileName,
+      mimeType,
+      size: hashed.size,
+      sha256: hashed.sha256,
+      dev: hashed.dev,
+      ino: hashed.ino,
+      mtimeMs: hashed.mtimeMs,
+      expiresAt: Date.now() + config.exportTtlMs,
+    });
+
+    return {
+      path: opened.path,
+      host_path: metadataHostPath(opened.path, config),
+      file_name: fileName,
+      size: hashed.size,
+      mime_type: mimeType,
+      sha256: hashed.sha256,
+      resource_uri: uri,
+    };
+  } finally {
+    await opened.handle.close();
+  }
+}
+
 function assertExportAuthorized(authorization: ExportAuthorization | undefined): asserts authorization is ExportAuthorization {
   if (
     !authorization
@@ -715,6 +771,12 @@ function exportTokenFromVariables(value: string | string[] | undefined): string 
   return value;
 }
 
+function previewTokenFromVariables(value: string | string[] | undefined): string {
+  if (Array.isArray(value)) value = value[0];
+  if (!value || !isExportTokenName(value)) throw new Error('Invalid preview resource token');
+  return value;
+}
+
 interface ExportDownload {
   fileName: string;
   mimeType: string;
@@ -776,6 +838,59 @@ export async function readExportResource(
   };
 }
 
+async function readValidatedPreview(
+  tokenValue: string | string[] | undefined,
+  config: BridgeConfig = loadBridgeConfig(),
+): Promise<ExportDownload> {
+  const token = previewTokenFromVariables(tokenValue);
+  const ticket = previewTickets.get(token);
+  if (!ticket) throw new Error('Preview resource is unknown or expired');
+  if (ticket.expiresAt < Date.now()) {
+    previewTickets.delete(token);
+    throw new Error('Preview resource has expired');
+  }
+
+  const opened = await openValidatedExportFile(ticket.path);
+  try {
+    if (opened.path !== ticket.path) throw new Error('Preview path resolution changed');
+    const stats = await opened.handle.stat();
+    if (
+      stats.dev !== ticket.dev ||
+      stats.ino !== ticket.ino ||
+      stats.size !== ticket.size ||
+      stats.mtimeMs !== ticket.mtimeMs
+    ) {
+      throw new Error('Preview file changed after the preview resource was created');
+    }
+    const read = await hashOpenFile(opened.handle, config.maxExportBytes, true);
+    if (read.sha256 !== ticket.sha256 || !read.bytes) {
+      throw new Error('Preview file integrity changed after the preview resource was created');
+    }
+    return {
+      fileName: ticket.fileName,
+      mimeType: ticket.mimeType,
+      size: ticket.size,
+      sha256: ticket.sha256,
+      bytes: read.bytes,
+    };
+  } finally {
+    await opened.handle.close();
+  }
+}
+
+export async function readPreviewResource(
+  tokenValue: string | string[] | undefined,
+  resourceUri: string,
+  config: BridgeConfig = loadBridgeConfig(),
+): Promise<ExportResource> {
+  const read = await readValidatedPreview(tokenValue, config);
+  return {
+    uri: resourceUri,
+    mimeType: read.mimeType,
+    blob: read.bytes.toString('base64'),
+  };
+}
+
 export async function startStaticExportCleanup(
   config: BridgeConfig = loadBridgeConfig(),
 ): Promise<NodeJS.Timeout | undefined> {
@@ -793,4 +908,5 @@ export async function startStaticExportCleanup(
 
 export function clearExportTicketsForTests(): void {
   exportTickets.clear();
+  previewTickets.clear();
 }

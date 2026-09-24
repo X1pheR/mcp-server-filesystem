@@ -42,12 +42,17 @@ describe('native MCP file bridge contracts', () => {
   it('advertises ingest_file as a ChatGPT native file parameter and export_file as stateful external transport', async () => {
     const { tools } = await client.listTools();
     const ingest = tools.find((tool) => tool.name === 'ingest_file');
+    const preview = tools.find((tool) => tool.name === 'preview_file');
     const exported = tools.find((tool) => tool.name === 'export_file');
 
     expect(ingest).toBeDefined();
     expect(ingest!._meta).toEqual(expect.objectContaining({ 'openai/fileParams': ['file'] }));
     expect(ingest!.inputSchema.required).toContain('file');
     expect((ingest!.inputSchema.properties as Record<string, unknown>).file).toBeDefined();
+    expect(preview).toBeDefined();
+    expect(preview!.annotations?.destructiveHint).toBe(false);
+    expect(preview!.annotations?.openWorldHint).toBe(false);
+    expect(preview!.inputSchema.required).toContain('path');
     expect(exported).toBeDefined();
     expect(exported!.annotations?.readOnlyHint).toBe(false);
     expect(exported!.annotations?.destructiveHint).toBe(false);
@@ -57,6 +62,38 @@ describe('native MCP file bridge contracts', () => {
       'intent',
       'confirm_user_requested_materialization',
     ]));
+  });
+
+  it('returns preview_file as a private HTML resource without creating static export state', async () => {
+    const file = path.join(testDir, 'preview.html');
+    const bytes = Buffer.from('<!doctype html><title>Preview</title>');
+    await fs.writeFile(file, bytes);
+
+    const result = await client.callTool({
+      name: 'preview_file',
+      arguments: { path: file },
+    });
+    expect(result.isError).not.toBe(true);
+    expect(result.content).toHaveLength(1);
+    const link = result.content[0] as { type: string; uri: string; name: string; mimeType?: string; size?: number };
+    expect(link.type).toBe('resource_link');
+    expect(link.uri).toMatch(/^mcp-file:\/\/preview\/[0-9a-f-]{36}$/i);
+    expect(link.name).toBe('preview.html');
+    expect(link.mimeType).toBe('text/html');
+    expect(link.size).toBe(bytes.byteLength);
+
+    const metadata = result.structuredContent as Record<string, unknown>;
+    expect(metadata.sha256).toBe(createHash('sha256').update(bytes).digest('hex'));
+    expect(metadata.resource_uri).toBe(link.uri);
+    expect(metadata.file_uri).toBeUndefined();
+    expect(await fs.readdir(exportDir)).toEqual([]);
+
+    const resource = await client.readResource({ uri: link.uri });
+    expect(resource.contents).toHaveLength(1);
+    expect(resource.contents[0]).toMatchObject({ uri: link.uri, mimeType: 'text/html' });
+    const blob = (resource.contents[0] as { blob?: string }).blob;
+    expect(blob).toBeDefined();
+    expect(Buffer.from(blob!, 'base64').equals(bytes)).toBe(true);
   });
 
   it('blocks accidental export selection for inspect/preview intent before creating any user-visible resource', async () => {

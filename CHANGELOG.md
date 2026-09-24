@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026.7.10-x1pher.11 - 2026-09-24
+
+- Added `preview_file` as a private, short-lived MCP resource path for client-side preview/materialization without static/public export or downloadable `file_uri` creation.
+- Added exact HTML MIME detection (`.html` / `.htm` -> `text/html`) plus source identity and SHA-256 revalidation before every preview resource read.
+- Kept the existing `export_file` egress authorization unchanged: preview/show/render remains denied there unless the user explicitly requests download/export/attach/transfer.
+- Added business and stdio MCP regression coverage proving preview resources do not populate the configured static export directory.
+
 ## 2026.7.10-x1pher.10 - 2026-09-20
 
 - Added `append_text_file` for exact UTF-8 append at physical EOF without truncating or replacing prior bytes.
