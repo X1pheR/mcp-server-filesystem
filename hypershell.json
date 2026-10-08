@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "name": "MCP Server Filesystem",
+  "category": "Infrastructure",
+  "kind": "mcp-server",
+  "upstream": {
+    "repository": "modelcontextprotocol/servers",
+    "reason": "Adds inode-preserving file writes and a bounded connector file bridge not currently provided by the upstream filesystem server."
+  }
+}
